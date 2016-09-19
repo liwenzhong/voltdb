@@ -181,6 +181,7 @@ public class SystemProcedureCatalog {
         builder.put("@SendSentinel",            new Config(null,                                           true,  false, false, 0,    VoltType.INVALID,   true,  false, false, true,      false,    false));
         builder.put("@PrepareShutdown",         new Config("org.voltdb.sysprocs.PrepareShutdown",          false, false, false, 0,    VoltType.INVALID,   false, false, true,  true,      false,    true));
         builder.put("@SwapTables",              new Config(null,                                           false, false, true,  0,    VoltType.INVALID,   false, true,  true,  true,      true,     false));
+        builder.put("@Trace",                   new Config(null,                                           false, true,  false, 0,    VoltType.INVALID,   false, false, true,  true,      false,    false));
         listing = builder.build();
     }
 }
