@@ -83,6 +83,7 @@ import org.voltdb.compiler.deploymentfile.DrRoleType;
 import org.voltdb.compilereport.ViewExplainer;
 import org.voltdb.iv2.Cartographer;
 import org.voltdb.iv2.Iv2Trace;
+import org.voltdb.iv2.MpInitiator;
 import org.voltdb.jni.ExecutionEngine;
 import org.voltdb.messaging.Iv2InitiateTaskMessage;
 import org.voltdb.messaging.MultiPartitionParticipantMessage;
@@ -358,10 +359,9 @@ public final class InvocationDispatcher {
             if ("@Ping".equals(procName)) {
                 return new ClientResponseImpl(ClientResponseImpl.SUCCESS, new VoltTable[0], "", task.clientHandle);
             }
-            // ExecuteTask is an internal procedure, not for public use.
-            else if ("@ExecuteTask".equals(procName)) {
-                return unexpectedFailureResponse(
-                        "@ExecuteTask is a reserved procedure only for VoltDB internal use", task.clientHandle);
+            else if ("@AdHoc".equals(procName)) {
+                dispatchAdHoc(task, handler, ccxn, ExplainMode.NONE, user);
+                return null;
             }
             else if ("@GetPartitionKeys".equals(procName)) {
                 return dispatchGetPartitionKeys(task);
@@ -379,13 +379,15 @@ public final class InvocationDispatcher {
                 return dispatchStatistics(OpsSelector.SYSTEMINFORMATION, task, ccxn);
             }
             else if ("@GC".equals(procName)) {
-                return dispatchSystemGC(handler, task);
+                dispatchSystemGC(handler, task);
+                return null;
             }
             else if ("@StopNode".equals(procName)) {
                 return dispatchStopNode(task);
             }
             else if ("@Explain".equals(procName)) {
-                return dispatchAdHoc(task, handler, ccxn, true, user);
+                dispatchAdHoc(task, handler, ccxn, ExplainMode.EXPLAIN_ADHOC, user);
+                return null;
             }
             else if ("@ExplainProc".equals(procName)) {
                 return dispatchExplainProcedure(task, handler, ccxn, user);
@@ -393,15 +395,21 @@ public final class InvocationDispatcher {
             else if ("@ExplainView".equals(procName)) {
                 return dispatchExplainView(task, ccxn);
             }
-            else if ("@AdHoc".equals(procName)) {
-                return dispatchAdHoc(task, handler, ccxn, false, user);
-            }
             else if ("@AdHocSpForTest".equals(procName)) {
                 return dispatchAdHocSpForTest(task, handler, ccxn, false, user);
             }
             else if ("@LoadSinglepartitionTable".equals(procName)) {
                 // FUTURE: When we get rid of the legacy hashinator, this should go away
                 return dispatchLoadSinglepartitionTable(catProc, task, handler, ccxn);
+            }
+            else if ("@SwapTables".equals(procName)) {
+                dispatchSwapTables(task, handler, ccxn, user);
+                return null;
+            }
+            // ExecuteTask is an internal procedure, not for public use.
+            else if ("@ExecuteTask".equals(procName)) {
+                return unexpectedFailureResponse(
+                        "@ExecuteTask is a reserved procedure only for VoltDB internal use", task.clientHandle);
             }
 
             // ERROR MESSAGE FOR PRO SYSPROC USE IN COMMUNITY
@@ -668,7 +676,7 @@ public final class InvocationDispatcher {
     private final ExecutorService m_systemGCThread =
             CoreUtils.getCachedSingleThreadExecutor("System.gc() invocation thread", 1000);
 
-    private final ClientResponseImpl dispatchSystemGC(final InvocationClientHandler handler, final StoredProcedureInvocation task) {
+    private final void dispatchSystemGC(final InvocationClientHandler handler, final StoredProcedureInvocation task) {
         m_systemGCThread.execute(new Runnable() {
             @Override
             public void run() {
@@ -694,8 +702,6 @@ public final class InvocationDispatcher {
                 cihm.connection.writeStream().enqueue(buf);
             }
         });
-        return null;
-
     }
 
     private ClientResponseImpl dispatchStopNode(StoredProcedureInvocation task) {
@@ -847,8 +853,8 @@ public final class InvocationDispatcher {
         return null;
     }
 
-    private final ClientResponseImpl dispatchAdHoc(StoredProcedureInvocation task, InvocationClientHandler handler,
-            Connection ccxn, boolean isExplain, AuthSystem.AuthUser user) {
+    private final void dispatchAdHoc(StoredProcedureInvocation task, InvocationClientHandler handler,
+            Connection ccxn, ExplainMode explainMode, AuthSystem.AuthUser user) {
         ParameterSet params = task.getParams();
         Object[] paramArray = params.toArray();
         String sql = (String) paramArray[0];
@@ -856,9 +862,20 @@ public final class InvocationDispatcher {
         if (params.size() > 1) {
             userParams = Arrays.copyOfRange(paramArray, 1, paramArray.length);
         }
-        ExplainMode explainMode = isExplain ? ExplainMode.EXPLAIN_ADHOC : ExplainMode.NONE;
         dispatchAdHocCommon(task, handler, ccxn, explainMode, sql, userParams, null, user);
-        return null;
+    }
+
+    private void dispatchSwapTables(StoredProcedureInvocation task,
+            InvocationClientHandler handler,
+            Connection ccxn, AuthSystem.AuthUser user) {
+        ParameterSet params = task.getParams();
+        Object[] paramArray = params.toArray();
+        String theTable = (String) paramArray[0];
+        String otherTable = (String) paramArray[1];
+        String sql = "@SwapTables " + theTable + " " + otherTable;
+        Object[] userParams = null;
+        dispatchAdHocCommon(task, handler, ccxn, ExplainMode.NONE, sql,
+                userParams, null, user);
     }
 
    /**
@@ -1585,7 +1602,8 @@ public final class InvocationDispatcher {
                           changeResult.reasonsForEmptyTables,
                           changeResult.requiresSnapshotIsolation ? 1 : 0,
                           changeResult.worksWithElastic ? 1 : 0,
-                          changeResult.deploymentHash);
+                          changeResult.deploymentHash,
+                          changeResult.hasSchemaChange ? 1 : 0);
            task.clientHandle = changeResult.clientHandle;
            // DR stuff
            task.type = changeResult.invocationType;
@@ -1809,10 +1827,6 @@ public final class InvocationDispatcher {
                 isShortCircuitRead = true;
             }
         }
-        if (initiatorHSId == null) {
-            hostLog.error("Failed to find master initiator for partition: " + partition + ". Transaction not initiated.");
-            return false;
-        }
 
         long handle = cihm.getHandle(isSinglePartition, partition, invocation.getClientHandle(),
                 messageSize, nowNanos, invocation.getProcName(), initiatorHSId, isReadOnly, isShortCircuitRead);
@@ -1842,7 +1856,7 @@ public final class InvocationDispatcher {
             // break out the Hashinator and calculate the appropriate partition
             return getPartitionForProcedure( ppi.index, ppi.type, task);
         } else {
-            return -1;
+            return MpInitiator.MP_INIT_PID;
         }
     }
 
