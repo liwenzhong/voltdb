@@ -451,7 +451,7 @@ public abstract class AbstractJoinPlanNode extends AbstractPlanNode implements I
      *
      * Resolution of columns produced by "SELECT *" is not a problem for
      * joins because there is always a sequential scan at the top of plans
-     * that have this problem, so just use the tve's coluymn index as its
+     * that have this problem, so just use the tve's column index as its
      * differentiator here.
      *
      * @param  tve
